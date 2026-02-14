@@ -16,13 +16,30 @@
 #   [3] Energy Binding — parametric budget + 3 readout scenarios
 #   [2] Adaptive Threshold — SNR-adaptive A_t rule
 
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT / "src"))
+
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
-from scipy.ndimage import gaussian_filter, binary_dilation, binary_closing, distance_transform_edt
 import time
+
+from core.optics import dog_kernel_embedded, optical_sim_linear
+from core.edges import edges_strict_zero_cross, adaptive_threshold
+from core.fusion import fuse_v2
+from core.metrics import edge_metrics_symmetric, gt_edges_from_binary
+from core.shapes import SHAPES, NYQUIST_SHAPES, IN_BAND_SHAPES
+
+# ============================================================
+# OUTPUT DIRECTORY
+# ============================================================
+FIGURES_DIR = _ROOT / "experiments" / "figures"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # ============================================================
 # GLOBAL
@@ -46,171 +63,6 @@ SCALES = {
     "C_coarse": {"sigma1": 1.6, "sigma2": 3.2, "ksize": 21},
 }
 
-NYQUIST_SHAPES = {"checker"}
-
-
-# ============================================================
-# SHAPE GENERATORS (Lucian's implementation — real thickness)
-# ============================================================
-def make_canvas(size: int = 128) -> np.ndarray:
-    return np.zeros((size, size), dtype=np.float32)
-
-def add_circle(img: np.ndarray, cx: int, cy: int, r: int, val: float = 1.0) -> None:
-    yy, xx = np.indices(img.shape)
-    img[(xx - cx)**2 + (yy - cy)**2 <= r*r] = val
-
-def add_rect(img: np.ndarray, x0: int, y0: int, x1: int, y1: int, val: float = 1.0) -> None:
-    img[y0:y1, x0:x1] = val
-
-def add_triangle(img: np.ndarray, pts: list, val: float = 1.0) -> None:
-    yy, xx = np.indices(img.shape)
-    x0, y0 = pts[0]; x1, y1 = pts[1]; x2, y2 = pts[2]
-    den = (y1 - y2)*(x0 - x2) + (x2 - x1)*(y0 - y2) + 1e-12
-    a = ((y1 - y2)*(xx - x2) + (x2 - x1)*(yy - y2)) / den
-    b = ((y2 - y0)*(xx - x2) + (x0 - x2)*(yy - y2)) / den
-    c = 1 - a - b
-    img[(a >= 0) & (b >= 0) & (c >= 0)] = val
-
-def add_line(img: np.ndarray, x0: int, y0: int, x1: int, y1: int,
-             thickness: int = 1, val: float = 1.0) -> None:
-    n = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
-    xs = np.linspace(x0, x1, n)
-    ys = np.linspace(y0, y1, n)
-    for x, y in zip(xs, ys):
-        xi, yi = int(round(x)), int(round(y))
-        y0b = max(0, yi - thickness); y1b = min(img.shape[0], yi + thickness + 1)
-        x0b = max(0, xi - thickness); x1b = min(img.shape[1], xi + thickness + 1)
-        img[y0b:y1b, x0b:x1b] = val
-
-def make_circle_square(s=128):
-    img = make_canvas(s); add_rect(img, 18, 18, 60, 60); add_circle(img, 76, 70, 34)
-    return np.clip(img, 0, 1)
-
-def make_triangle(s=128):
-    img = make_canvas(s); add_triangle(img, [(64, 20), (20, 100), (108, 100)]); return img
-
-def make_concave_polygon(s=128):
-    img = make_canvas(s)
-    add_rect(img, 28, 20, 92, 44); add_rect(img, 28, 44, 52, 108); add_rect(img, 52, 84, 92, 108)
-    return img
-
-def make_thin_lines(s=128):
-    img = make_canvas(s)
-    add_line(img, 10, 30, 118, 30, thickness=1)
-    add_line(img, 10, 60, 118, 100, thickness=1)
-    add_line(img, 30, 10, 30, 118, thickness=1)
-    add_line(img, 70, 10, 100, 118, thickness=1)
-    return img
-
-def make_text_F3C(s=128):
-    img = make_canvas(s)
-    add_rect(img, 12, 28, 20, 100); add_rect(img, 20, 28, 50, 36); add_rect(img, 20, 56, 42, 64)
-    add_rect(img, 56, 28, 84, 36); add_rect(img, 56, 56, 84, 64); add_rect(img, 56, 92, 84, 100)
-    add_rect(img, 76, 36, 84, 56); add_rect(img, 76, 64, 84, 92)
-    add_rect(img, 92, 28, 118, 36); add_rect(img, 92, 92, 118, 100); add_rect(img, 92, 36, 100, 92)
-    return img
-
-def make_tangent_circles(s=128):
-    img = make_canvas(s); add_circle(img, 50, 64, 22); add_circle(img, 78, 64, 22); return img
-
-def make_checker(s=128, cell=16):
-    img = make_canvas(s)
-    for y in range(0, s, cell):
-        for x in range(0, s, cell):
-            if ((x // cell) + (y // cell)) % 2 == 0:
-                add_rect(img, x, y, min(s, x + cell), min(s, y + cell))
-    return img
-
-def make_textured_object(s=128):
-    rng = np.random.default_rng(0)
-    base = rng.normal(0.0, 0.12, (s, s)).astype(np.float32)
-    base = gaussian_filter(base, 2.0)
-    base = (base - base.min()) / (base.max() - base.min() + 1e-12) * 0.25
-    img = base.copy(); add_circle(img, 72, 68, 26); return np.clip(img, 0, 1)
-
-def gt_edges_from_binary(img: np.ndarray) -> np.ndarray:
-    """GT edges: gradient magnitude > 0.05, NO thinning (natural 2-3px width)."""
-    gx, gy = np.gradient(img.astype(np.float32))
-    return np.sqrt(gx*gx + gy*gy) > 0.05
-
-SHAPES = {
-    "circle_square": make_circle_square, "triangle": make_triangle,
-    "concave_polygon": make_concave_polygon, "thin_lines": make_thin_lines,
-    "text_F3C": make_text_F3C, "tangent_circles": make_tangent_circles,
-    "checker": make_checker, "textured_object": make_textured_object,
-}
-
-
-# ============================================================
-# OPTICAL + DIGITAL CORE
-# ============================================================
-def dog_kernel_embedded(image_size: int, ksize: int,
-                        sigma1: float, sigma2: float) -> np.ndarray:
-    """DoG kernel (simple g1-g2, zero-DC) embedded in image-sized array."""
-    ax = np.linspace(-(ksize // 2), ksize // 2, ksize)
-    x, y = np.meshgrid(ax, ax); d2 = x*x + y*y
-    g1 = np.exp(-d2 / (2*sigma1*sigma1)); g2 = np.exp(-d2 / (2*sigma2*sigma2))
-    g1 /= (g1.sum() + 1e-12); g2 /= (g2.sum() + 1e-12)
-    dog = g1 - g2; dog -= dog.mean()
-    ker = np.zeros((image_size, image_size), dtype=np.float32)
-    c, h = image_size // 2, ksize // 2
-    ker[c-h:c+h+1, c-h:c+h+1] = dog.astype(np.float32)
-    return ker
-
-def optical_sim_linear(img: np.ndarray, kernel: np.ndarray,
-                       snr_db: float, drift_std: float,
-                       rng: np.random.Generator) -> np.ndarray:
-    """4f optical sim: phase drift + FFT conv + additive noise."""
-    phase = rng.normal(0.0, drift_std, img.shape)
-    E_in = img.astype(np.float32) * np.exp(1j * phase)
-    H = np.fft.fft2(np.fft.ifftshift(kernel))
-    E_out = np.fft.ifft2(np.fft.fft2(E_in) * H)
-    Y = np.real(E_out).astype(np.float32)
-    sig_power = max(float(np.mean(Y*Y)), 1e-12)
-    noise_power = sig_power / (10.0 ** (snr_db / 10.0))
-    return (Y + rng.normal(0.0, np.sqrt(noise_power), Y.shape)).astype(np.float32)
-
-def robust_sigma_mad(x: np.ndarray) -> float:
-    return 1.4826 * max(float(np.median(np.abs(x - np.median(x)))), 1e-12)
-
-def edges_strict_zero_cross(Y: np.ndarray, edge_t: float = 2.2,
-                             smooth_sigma: float = 0.9,
-                             closing: bool = True) -> np.ndarray:
-    """4-neighbor ZC + max-gate on robust z-score."""
-    Zs = gaussian_filter(Y, smooth_sigma) if smooth_sigma > 0 else Y
-    med = np.median(Zs); sig = robust_sigma_mad(Zs)
-    Zz = (Zs - med) / (sig + 1e-12)
-    sgn = np.sign(Zs)
-    flip_r = (sgn[:, :-1] * sgn[:, 1:]) < 0
-    flip_d = (sgn[:-1, :] * sgn[1:, :]) < 0
-    zc = np.zeros_like(Zs, dtype=bool)
-    zc[:, :-1] |= flip_r; zc[:, 1:] |= flip_r
-    zc[:-1, :] |= flip_d; zc[1:, :] |= flip_d
-    edges = zc & (np.abs(Zz) >= edge_t)
-    if closing:
-        edges = binary_closing(edges, iterations=1)
-    return edges
-
-def fuse_v2(edges_A: np.ndarray, edges_B: np.ndarray,
-            edges_C: np.ndarray, dilate_px: int = 3) -> np.ndarray:
-    """Fusion v2: BC backbone, A fills gaps outside BC coverage."""
-    edges_BC = edges_B | edges_C
-    coverage = binary_dilation(edges_BC, iterations=dilate_px)
-    return edges_BC | (edges_A & ~coverage)
-
-def edge_metrics_symmetric(pred: np.ndarray, gt: np.ndarray, tol_px: int = 2) -> dict:
-    """Symmetric edge metric via bidirectional distance transform."""
-    ps, gs = int(pred.sum()), int(gt.sum())
-    if ps == 0 and gs == 0: return {"p": 1.0, "r": 1.0, "f1": 1.0}
-    if ps == 0: return {"p": 0.0, "r": 0.0, "f1": 0.0}
-    if gs == 0: return {"p": 0.0, "r": 0.0, "f1": 0.0}
-    dg = distance_transform_edt(~gt); dp = distance_transform_edt(~pred)
-    TP = int((pred & (dg <= tol_px)).sum())
-    FP = int((pred & (dg > tol_px)).sum())
-    FN = int((gt & (dp > tol_px)).sum())
-    p = TP / (TP + FP + 1e-8); r = TP / (TP + FN + 1e-8)
-    return {"p": p, "r": r, "f1": 2*p*r / (p + r + 1e-8), "TP": TP, "FP": FP, "FN": FN}
-
 
 # ============================================================
 # FULL PIPELINE RUN
@@ -225,14 +77,14 @@ def run_pipeline(img: np.ndarray, gt: np.ndarray, snr: float, drift: float,
         per_scale[name] = edges_strict_zero_cross(Y, edge_t=edge_t,
                                                    smooth_sigma=SMOOTH_SIGMA,
                                                    closing=CLOSING)
-    fused = fuse_v2(per_scale["A_fine"], per_scale["B_mid"],
-                    per_scale["C_coarse"], COVERAGE_DILATE_PX)
+    backbone = per_scale["B_mid"] | per_scale["C_coarse"]
+    fused = fuse_v2(per_scale["A_fine"], backbone, COVERAGE_DILATE_PX)
     return edge_metrics_symmetric(fused, gt, tol_px=TOL_PX)
 
 
 def run_grid(img: np.ndarray, gt: np.ndarray,
              edge_t: float = EDGE_T) -> tuple:
-    """Run full SNR×drift grid, return (f1_grid, prec_grid, rec_grid)."""
+    """Run full SNR x drift grid, return (f1_grid, prec_grid, rec_grid)."""
     ns, nd = len(SNR_VALUES), len(DRIFT_VALUES)
     f1_g = np.zeros((ns, nd)); p_g = np.zeros((ns, nd)); r_g = np.zeros((ns, nd))
     for i, snr in enumerate(SNR_VALUES):
@@ -310,15 +162,15 @@ def deliverable_1_envelope():
     print(f"  {'Median F1':<25s} | {np.median(guar_f1):>12.4f} | {np.median(full_f1):>12.4f} | {'median over 7 shapes':>30s}", flush=True)
     print(f"  {'Worst-case Precision':<25s} | {guar_p.min():>12.4f} | {worst_p.min():>12.4f} | {'min over 7 shapes':>30s}", flush=True)
     print(f"  {'Worst-case Recall':<25s} | {guar_r.min():>12.4f} | {worst_r.min():>12.4f} | {'min over 7 shapes':>30s}", flush=True)
-    print(f"  {'SNR range':<25s} | {'≥ 15 dB':>12s} | {'≥ 10 dB':>12s} |", flush=True)
-    print(f"  {'Drift budget':<25s} | {'≤ 0.10':>12s} | {'≤ 0.20':>12s} |", flush=True)
-    print(f"  {'Feature width':<25s} | {'> 2×σ₂':>12s} | {'> 2×σ₂':>12s} | {'= 4px at σ₂=2.0':>30s}", flush=True)
+    print(f"  {'SNR range':<25s} | {'>=  15 dB':>12s} | {'>=  10 dB':>12s} |", flush=True)
+    print(f"  {'Drift budget':<25s} | {'<= 0.10':>12s} | {'<= 0.20':>12s} |", flush=True)
+    print(f"  {'Feature width':<25s} | {'> 2*s2':>12s} | {'> 2*s2':>12s} | {'= 4px at s2=2.0':>30s}", flush=True)
     print(f"  {'Nyquist exclusion':<25s} | {'checker':>12s} | {'checker':>12s} | {'periodic 1px spacing':>30s}", flush=True)
     print(f"  {'Optical passes':<25s} | {'3 (A+B+C)':>12s} | {'3 (A+B+C)':>12s} |", flush=True)
     print(f"  {'Metric':<25s} | {'sym DT':>12s} | {'sym DT':>12s} | {'tol=2px bidirectional':>30s}", flush=True)
 
     # Per-shape summary in guaranteed regime
-    print(f"\n  Per-shape in GUARANTEED regime (SNR≥15, drift≤0.10):", flush=True)
+    print(f"\n  Per-shape in GUARANTEED regime (SNR>=15, drift<=0.10):", flush=True)
     print(f"  {'Shape':<18s} | {'min F1':>7s} | {'med F1':>7s} | {'min P':>7s} | {'min R':>7s}", flush=True)
     print(f"  {'-'*55}", flush=True)
     for name in in_band:
@@ -399,13 +251,13 @@ def deliverable_1_envelope():
     ax_regime.set_xlabel("Phase Drift"); ax_regime.set_ylabel("SNR (dB)")
     ax_regime.set_title("Guaranteed Regime (bold) vs Best-Effort", fontsize=10)
 
-    fig.suptitle("F3C-PX Engineering Envelope — 7 In-Band Shapes, Symmetric Metric (tol=2px)\n"
-                 "Green box: GUARANTEED regime (SNR≥15 dB, drift≤0.10)",
+    fig.suptitle("F3C-PX Engineering Envelope -- 7 In-Band Shapes, Symmetric Metric (tol=2px)\n"
+                 "Green box: GUARANTEED regime (SNR>=15 dB, drift<=0.10)",
                  fontsize=12, fontweight="bold")
     plt.tight_layout()
-    fig.savefig("/home/claude/d1_envelope.png", dpi=150, bbox_inches="tight")
+    fig.savefig(FIGURES_DIR / "d1_envelope.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print("\n✓ d1_envelope.png saved", flush=True)
+    print("\n[OK] d1_envelope.png saved", flush=True)
 
     return all_f1, all_p, all_r, shape_data, in_band
 
@@ -442,9 +294,9 @@ def deliverable_3_energy():
 
     # Resolutions to analyze
     RESOLUTIONS = {
-        "128×128":   128*128,
-        "512×512":   512*512,
-        "1024×1024": 1024*1024,
+        "128x128":   128*128,
+        "512x512":   512*512,
+        "1024x1024": 1024*1024,
     }
 
     FPS_OPTIONS = [30, 100, 1000]  # frame rates
@@ -452,10 +304,10 @@ def deliverable_3_energy():
     N_PASSES = 3  # A + B + C
 
     print(f"\n  Component assumptions:", flush=True)
-    print(f"    Laser: {LASER_POWER_W*1e3:.1f} mW CW, wall-plug η={LASER_EFFICIENCY:.0%}", flush=True)
+    print(f"    Laser: {LASER_POWER_W*1e3:.1f} mW CW, wall-plug eta={LASER_EFFICIENCY:.0%}", flush=True)
     print(f"    SLM: {SLM_POWER_W*1e3:.0f} mW, switch time {SLM_SWITCH_TIME_S*1e3:.0f} ms", flush=True)
     print(f"    ADC: {ADC_ENERGY_PJ_PER_BIT} pJ/conv-bit (CMOS 65nm)", flush=True)
-    print(f"    Digital: {DIGITAL_OPS_PER_PIXEL} ops/px × {DIGITAL_PJ_PER_OP} pJ/op", flush=True)
+    print(f"    Digital: {DIGITAL_OPS_PER_PIXEL} ops/px x {DIGITAL_PJ_PER_OP} pJ/op", flush=True)
     print(f"    Optical passes: {N_PASSES}", flush=True)
 
     # --- SCENARIO ANALYSIS ---
@@ -467,7 +319,7 @@ def deliverable_3_energy():
     }
 
     print(f"\n  {'=' * 70}", flush=True)
-    print(f"  ENERGY PER FRAME (pJ) — 3 optical passes", flush=True)
+    print(f"  ENERGY PER FRAME (pJ) -- 3 optical passes", flush=True)
     print(f"  {'=' * 70}", flush=True)
 
     for res_name, n_pixels in RESOLUTIONS.items():
@@ -480,7 +332,7 @@ def deliverable_3_energy():
             # Optical energy per frame (laser propagation through 4f system)
             # Propagation time ~ L/c ~ 0.1m / 3e8 ~ 0.3 ns per pass
             PROP_TIME_S = 0.3e-9  # 0.3 ns
-            optical_per_pass_pJ = LASER_POWER_W * PROP_TIME_S * 1e12  # convert W·s to pJ
+            optical_per_pass_pJ = LASER_POWER_W * PROP_TIME_S * 1e12  # convert W*s to pJ
             optical_total_pJ = optical_per_pass_pJ * N_PASSES
 
             # SLM energy per frame (amortized)
@@ -496,7 +348,7 @@ def deliverable_3_energy():
             # Total
             total_pJ = optical_total_pJ + slm_per_frame_pJ + adc_total_pJ + digital_total_pJ
             pj_per_pixel = total_pJ / n_pixels
-            # "edge-op" = one DoG convolution equivalent (N² multiply-accumulate for ksize=21)
+            # "edge-op" = one DoG convolution equivalent (N^2 multiply-accumulate for ksize=21)
             # Digital equivalent: 21*21*2 = 882 MACs per pixel per scale
             digital_equivalent_pj = n_pixels * 882 * N_PASSES * DIGITAL_PJ_PER_OP
             speedup = digital_equivalent_pj / total_pJ if total_pJ > 0 else 0
@@ -535,12 +387,12 @@ def deliverable_3_energy():
         axes_e[idx].set_title(f"{sc_name}\nTotal: {total_pJ:,.0f} pJ\n({total_pJ/res_demo:.1f} pJ/px)",
                                fontsize=8)
 
-    fig_e.suptitle("Energy Breakdown per Frame — 512×512, 3 passes",
+    fig_e.suptitle("Energy Breakdown per Frame -- 512x512, 3 passes",
                    fontsize=12, fontweight="bold")
     plt.tight_layout()
-    fig_e.savefig("/home/claude/d3_energy_breakdown.png", dpi=150, bbox_inches="tight")
+    fig_e.savefig(FIGURES_DIR / "d3_energy_breakdown.png", dpi=150, bbox_inches="tight")
     plt.close(fig_e)
-    print("\n✓ d3_energy_breakdown.png saved", flush=True)
+    print("\n[OK] d3_energy_breakdown.png saved", flush=True)
 
     # --- ENERGY vs RESOLUTION SCALING ---
     fig_s, ax_s = plt.subplots(1, 1, figsize=(8, 5))
@@ -576,17 +428,17 @@ def deliverable_3_energy():
                   rotation=45, ha='left')
 
     plt.tight_layout()
-    fig_s.savefig("/home/claude/d3_energy_scaling.png", dpi=150, bbox_inches="tight")
+    fig_s.savefig(FIGURES_DIR / "d3_energy_scaling.png", dpi=150, bbox_inches="tight")
     plt.close(fig_s)
-    print("✓ d3_energy_scaling.png saved", flush=True)
+    print("[OK] d3_energy_scaling.png saved", flush=True)
 
     # --- KEY INSIGHT ---
     print(f"\n  KEY INSIGHT:", flush=True)
     print(f"  The optical core contributes < 0.001 pJ/pixel (negligible).", flush=True)
     print(f"  SLM reconfiguration is fixed-cost (~{SLM_POWER_W*SLM_SWITCH_TIME_S*N_PASSES*1e6:.0f} nJ/frame).", flush=True)
     print(f"  Energy is dominated by ADC readout ({'>'}90% for full-frame 12-bit).", flush=True)
-    print(f"  Reducing readout (1-bit edge-map or ROI) cuts total energy by 5-12×.", flush=True)
-    print(f"  Digital-only baseline: {digital_per_px:.0f} pJ/px (3× DoG convolution).", flush=True)
+    print(f"  Reducing readout (1-bit edge-map or ROI) cuts total energy by 5-12x.", flush=True)
+    print(f"  Digital-only baseline: {digital_per_px:.0f} pJ/px (3x DoG convolution).", flush=True)
     print(f"  The value proposition is NOT 'optical is cheaper per-op' but", flush=True)
     print(f"  'optical executes O(1) propagation-time convolution, enabling", flush=True)
     print(f"  architectures where readout reduction (1-bit/ROI) delivers", flush=True)
@@ -602,8 +454,8 @@ def deliverable_2_adaptive(shape_data, in_band):
     print(f"{'=' * 70}", flush=True)
 
     # Idea: estimate SNR from the optical output, set A_t accordingly
-    # Higher SNR → higher A_t (suppress drift FP)
-    # Lower SNR → lower A_t (keep thin features)
+    # Higher SNR -> higher A_t (suppress drift FP)
+    # Lower SNR -> lower A_t (keep thin features)
 
     # First: sweep A_t at each (SNR, drift) and find per-cell optimal
     A_T_SWEEP = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0]
@@ -655,12 +507,12 @@ def deliverable_2_adaptive(shape_data, in_band):
     # --- DERIVE SIMPLE RULE ---
     # Observation: optimal A_t correlates with SNR
     # Group by SNR and take median of optimal A_t
-    print(f"\n  SNR → median optimal A_t:", flush=True)
+    print(f"\n  SNR -> median optimal A_t:", flush=True)
     snr_to_at = {}
     for i, snr in enumerate(SNR_VALUES):
         med_at = np.median(optimal_at[i, :])
         snr_to_at[snr] = med_at
-        print(f"    SNR={snr:2d} dB → A_t={med_at:.1f}", flush=True)
+        print(f"    SNR={snr:2d} dB -> A_t={med_at:.1f}", flush=True)
 
     # Simple linear fit: A_t = a * SNR_dB + b
     snr_arr = np.array(SNR_VALUES, dtype=float)
@@ -668,7 +520,7 @@ def deliverable_2_adaptive(shape_data, in_band):
     coeffs = np.polyfit(snr_arr, at_arr, 1)
     a_slope, b_intercept = coeffs
 
-    print(f"\n  Linear rule: A_t = {a_slope:.3f} × SNR_dB + {b_intercept:.2f}", flush=True)
+    print(f"\n  Linear rule: A_t = {a_slope:.3f} x SNR_dB + {b_intercept:.2f}", flush=True)
     print(f"  Clamped to [{A_T_SWEEP[0]}, {A_T_SWEEP[-1]}]", flush=True)
 
     # Validate the rule
@@ -689,12 +541,12 @@ def deliverable_2_adaptive(shape_data, in_band):
                 worst = min(worst, np.mean(f1s))
             rule_f1_grid[i, j] = worst
 
-    print(f"  {'SNR':>6s} | {'Rule A_t':>8s} | {'Rule min F1':>11s} | {'Fixed min F1':>12s} | {'Δ':>6s}", flush=True)
+    print(f"  {'SNR':>6s} | {'Rule A_t':>8s} | {'Rule min F1':>11s} | {'Fixed min F1':>12s} | {'Delta':>6s}", flush=True)
     print(f"  {'-'*52}", flush=True)
     for i, snr in enumerate(SNR_VALUES):
         rule_at = np.clip(a_slope * snr + b_intercept, A_T_SWEEP[0], A_T_SWEEP[-1])
         rule_min = rule_f1_grid[i, :].min()
-        # We need fixed-t=2.2 min for comparison — recompute quickly
+        # We need fixed-t=2.2 min for comparison -- recompute quickly
         fixed_min = 1.0
         for j, drift in enumerate(DRIFT_VALUES):
             for name in in_band:
@@ -729,25 +581,25 @@ def deliverable_2_adaptive(shape_data, in_band):
     ax2.set_xticks(range(len(DRIFT_VALUES))); ax2.set_xticklabels([f"{d:.2f}" for d in DRIFT_VALUES])
     ax2.set_yticks(range(len(SNR_VALUES))); ax2.set_yticklabels([f"{s} dB" for s in SNR_VALUES])
     ax2.set_xlabel("Drift"); ax2.set_ylabel("SNR")
-    ax2.set_title(f"Worst F1 with adaptive rule\nA_t = {a_slope:.2f}×SNR + {b_intercept:.1f}")
+    ax2.set_title(f"Worst F1 with adaptive rule\nA_t = {a_slope:.2f}*SNR + {b_intercept:.1f}")
     plt.colorbar(im2, ax=ax2, shrink=0.8)
 
-    # SNR → A_t rule plot
+    # SNR -> A_t rule plot
     snr_fine = np.linspace(8, 32, 50)
     at_fine = np.clip(a_slope * snr_fine + b_intercept, A_T_SWEEP[0], A_T_SWEEP[-1])
-    ax3.plot(snr_fine, at_fine, 'b-', linewidth=2, label=f'Rule: {a_slope:.2f}×SNR + {b_intercept:.1f}')
+    ax3.plot(snr_fine, at_fine, 'b-', linewidth=2, label=f'Rule: {a_slope:.2f}*SNR + {b_intercept:.1f}')
     ax3.plot(snr_arr, at_arr, 'ro', markersize=8, label='Measured optima')
     ax3.set_xlabel("SNR (dB)"); ax3.set_ylabel("A threshold")
     ax3.set_title("Adaptive Rule: A_t = f(SNR)")
     ax3.legend(); ax3.grid(True, alpha=0.3)
     ax3.set_xlim(8, 32); ax3.set_ylim(1, 7)
 
-    fig_a.suptitle("F3C-PX Adaptive Threshold — SNR-dependent A gate",
+    fig_a.suptitle("F3C-PX Adaptive Threshold -- SNR-dependent A gate",
                    fontsize=12, fontweight="bold")
     plt.tight_layout()
-    fig_a.savefig("/home/claude/d2_adaptive.png", dpi=150, bbox_inches="tight")
+    fig_a.savefig(FIGURES_DIR / "d2_adaptive.png", dpi=150, bbox_inches="tight")
     plt.close(fig_a)
-    print("\n✓ d2_adaptive.png saved", flush=True)
+    print("\n[OK] d2_adaptive.png saved", flush=True)
 
 
 # ============================================================
@@ -766,5 +618,5 @@ if __name__ == "__main__":
     deliverable_2_adaptive(shape_data, in_band)
 
     print(f"\n{'=' * 70}", flush=True)
-    print(f"ALL DELIVERABLES COMPLETE — {time.time()-t_global:.1f}s", flush=True)
+    print(f"ALL DELIVERABLES COMPLETE -- {time.time()-t_global:.1f}s", flush=True)
     print(f"{'=' * 70}", flush=True)

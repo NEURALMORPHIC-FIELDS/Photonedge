@@ -8,7 +8,16 @@ Implements DoG kernel generation, phase drift modeling, and optical
 propagation through the 4f correlator system.
 """
 
+import functools
 import numpy as np
+
+
+@functools.lru_cache(maxsize=16)
+def _fft_kernel_cached(image_size: int, ksize: int,
+                       sigma1: float, sigma2: float) -> np.ndarray:
+    """Cached FFT of the DoG kernel — avoids recomputing H(u,v) for repeated calls."""
+    kernel = dog_kernel_embedded(image_size, ksize, sigma1, sigma2)
+    return np.fft.fft2(np.fft.ifftshift(kernel))
 
 
 def dog_kernel_embedded(image_size: int, ksize: int,
@@ -71,7 +80,7 @@ def optical_sim_linear(img: np.ndarray, kernel: np.ndarray,
     E_in = img.astype(np.float32) * np.exp(1j * phase)
 
     F_in = np.fft.fft2(E_in)
-    H = np.fft.fft2(np.fft.ifftshift(kernel))
+    H = np.fft.fft2(np.fft.ifftshift(kernel))  # consider _fft_kernel_cached for repeated calls
     E_out = np.fft.ifft2(F_in * H)
 
     Y = np.real(E_out).astype(np.float32)

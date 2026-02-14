@@ -131,11 +131,8 @@ def make_tangent_circles(s: int = 128) -> np.ndarray:
 
 def make_checker(s: int = 128, cell: int = 16) -> np.ndarray:
     """Checkerboard: periodic pattern with 1px edge spacing (Nyquist regime)."""
-    img = _make_canvas(s)
-    for y in range(0, s, cell):
-        for x in range(0, s, cell):
-            if ((x // cell) + (y // cell)) % 2 == 0:
-                _add_rect(img, x, y, min(s, x + cell), min(s, y + cell))
+    yy, xx = np.indices((s, s))
+    img = (((xx // cell) + (yy // cell)) % 2 == 0).astype(np.float32)
     return img
 
 

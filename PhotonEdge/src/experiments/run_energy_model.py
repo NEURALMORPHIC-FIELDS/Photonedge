@@ -12,6 +12,15 @@
 #   SLM energy is NOT per-frame in regimes 1-2.
 #   The dominant cost is ALWAYS readout (ADC) + digital post-proc.
 
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT / "src"))
+
+FIGURES_DIR = _ROOT / "experiments" / "figures"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -391,7 +400,7 @@ if __name__ == "__main__":
 
     fig1.suptitle(f"F3C-PX Energy Breakdown — {ref_name} per frame", fontsize=12, fontweight="bold")
     plt.tight_layout()
-    fig1.savefig("/home/claude/energy_breakdown.png", dpi=150, bbox_inches="tight")
+    fig1.savefig(str(FIGURES_DIR / "energy_breakdown.png"), dpi=150, bbox_inches="tight")
     plt.close(fig1)
     print("  ✓ energy_breakdown.png", flush=True)
 
@@ -437,7 +446,7 @@ if __name__ == "__main__":
 
     fig2.suptitle("F3C-PX Energy Scaling vs Resolution", fontsize=12, fontweight="bold")
     plt.tight_layout()
-    fig2.savefig("/home/claude/energy_scaling.png", dpi=150, bbox_inches="tight")
+    fig2.savefig(str(FIGURES_DIR / "energy_scaling.png"), dpi=150, bbox_inches="tight")
     plt.close(fig2)
     print("  ✓ energy_scaling.png", flush=True)
 
@@ -481,7 +490,7 @@ if __name__ == "__main__":
         ax3.text(total + 0.1, i, f"{total:.2f} ms", va='center', fontsize=8)
 
     plt.tight_layout()
-    fig3.savefig("/home/claude/energy_latency.png", dpi=150, bbox_inches="tight")
+    fig3.savefig(str(FIGURES_DIR / "energy_latency.png"), dpi=150, bbox_inches="tight")
     plt.close(fig3)
     print("  ✓ energy_latency.png", flush=True)
 
@@ -540,7 +549,7 @@ if __name__ == "__main__":
     ax4.set_title(f"F3C-PX Deployment Comparison — {ref_name}",
                   fontsize=13, fontweight='bold', pad=20)
     plt.tight_layout()
-    fig4.savefig("/home/claude/energy_comparison_card.png", dpi=150, bbox_inches="tight")
+    fig4.savefig(str(FIGURES_DIR / "energy_comparison_card.png"), dpi=150, bbox_inches="tight")
     plt.close(fig4)
     print("  ✓ energy_comparison_card.png", flush=True)
 

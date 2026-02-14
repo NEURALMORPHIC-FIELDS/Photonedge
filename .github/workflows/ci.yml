@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+
+    defaults:
+      run:
+        working-directory: PhotonEdge
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: Verify imports
+        run: |
+          python -c "from src.core.optics import dog_kernel_embedded, optical_sim_linear"
+          python -c "from src.core.edges import edges_strict_zero_cross, adaptive_threshold"
+          python -c "from src.core.fusion import fuse_v2, fuse_backbone_with_fine"
+          python -c "from src.core.metrics import edge_metrics_symmetric, gt_edges_from_binary"
+          python -c "from src.core.shapes import SHAPES, IN_BAND_SHAPES"
