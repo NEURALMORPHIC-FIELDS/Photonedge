@@ -1,0 +1,54 @@
+PROPRIETARY LICENSE
+
+PhotonEdge — Optical Pre-Processing for Edge Detection
+
+Copyright (c) 2024-2026 Vasile Lucian Borbeleac / FRAGMERGENT TECHNOLOGY S.R.L.
+Cluj-Napoca, Romania
+
+All rights reserved.
+
+This software, documentation, experimental data, and associated intellectual property
+are the exclusive property of Vasile Lucian Borbeleac and FRAGMERGENT TECHNOLOGY S.R.L.
+
+No part of this repository may be reproduced, distributed, transmitted, displayed,
+published, or broadcast in any form or by any means, including photocopying, recording,
+or other electronic or mechanical methods, without the prior written permission of the
+copyright holder.
+
+TERMS
+
+1. GRANT OF LICENSE
+   No license is granted by this document. All rights are reserved to the copyright holder.
+
+2. RESTRICTIONS
+   You may NOT:
+   - Copy, modify, or distribute this software or any portion thereof
+   - Use this software for commercial or non-commercial purposes without authorization
+   - Reverse engineer, decompile, or disassemble this software
+   - Create derivative works based on this software
+   - Sublicense, sell, or transfer this software to any third party
+
+3. INTELLECTUAL PROPERTY
+   All patents, trademarks, trade secrets, and copyrights related to this software
+   remain the exclusive property of the copyright holder. This includes but is not
+   limited to:
+   - The 4f Fourier-plane DoG band-pass architecture
+   - The multi-scale fusion v2 algorithm
+   - The SNR-adaptive threshold policy
+   - The energy model and deployment regime analysis
+   - All experimental data, figures, and documentation
+
+4. CONFIDENTIALITY
+   The contents of this repository are confidential. Any unauthorized disclosure,
+   reproduction, or use is strictly prohibited and may result in legal action.
+
+5. TERMINATION
+   Any unauthorized use automatically terminates any implied permission to access
+   this repository.
+
+6. GOVERNING LAW
+   This license shall be governed by the laws of Romania and the European Union.
+
+For licensing inquiries, contact:
+FRAGMERGENT TECHNOLOGY S.R.L.
+Cluj-Napoca, Romania

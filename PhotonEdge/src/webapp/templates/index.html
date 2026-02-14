@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhotonEdge — Optical Pre-Processing for Edge Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+</head>
+<body>
+    <!-- ============================================================ -->
+    <!-- HEADER                                                        -->
+    <!-- ============================================================ -->
+    <header id="header">
+        <div class="header-left">
+            <div class="logo">
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                    <circle cx="14" cy="14" r="12" stroke="#00e5ff" stroke-width="2" fill="none"/>
+                    <circle cx="14" cy="14" r="6" fill="#00e5ff" opacity="0.3"/>
+                    <circle cx="14" cy="14" r="3" fill="#00e5ff"/>
+                </svg>
+                <span class="logo-text">PhotonEdge</span>
+            </div>
+            <span class="subtitle">Optical Pre-Processing for Edge Detection</span>
+        </div>
+        <div class="header-center">
+            <div class="source-selector">
+                <button id="btn-webcam" class="src-btn" title="Use webcam">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+                    <span>Webcam</span>
+                </button>
+                <button id="btn-upload" class="src-btn" title="Upload image">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    <span>Upload</span>
+                </button>
+                <button id="btn-demo" class="src-btn active" title="Demo shapes">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>
+                    <span>Demo</span>
+                </button>
+            </div>
+        </div>
+        <div class="header-right">
+            <div id="status-indicator" class="status disconnected">
+                <span class="status-dot"></span>
+                <span class="status-text">Disconnected</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- ============================================================ -->
+    <!-- MAIN LAYOUT                                                   -->
+    <!-- ============================================================ -->
+    <main id="main">
+        <!-- LEFT PANEL: Controls -->
+        <aside id="panel-left">
+            <!-- Mode Selector -->
+            <section class="panel-section">
+                <h3>Application Mode</h3>
+                <div id="mode-selector"></div>
+            </section>
+
+            <!-- Demo Shape Selector -->
+            <section class="panel-section" id="demo-section">
+                <h3>Test Shape</h3>
+                <select id="demo-shape">
+                    <option value="circle_square">Circle + Square</option>
+                    <option value="triangle">Triangle</option>
+                    <option value="concave_polygon">Concave Polygon</option>
+                    <option value="thin_lines">Thin Lines</option>
+                    <option value="text_F3C">Text F3C</option>
+                    <option value="tangent_circles">Tangent Circles</option>
+                    <option value="checker">Checker (Nyquist)</option>
+                    <option value="textured_object">Textured Object</option>
+                </select>
+                <div class="slider-group">
+                    <label>SNR: <span id="snr-val">25</span> dB</label>
+                    <input type="range" id="demo-snr" min="5" max="40" step="1" value="25">
+                </div>
+                <button id="btn-run-demo" class="btn-primary">Run Simulation</button>
+            </section>
+
+            <!-- Parameters -->
+            <section class="panel-section">
+                <h3>Parameters</h3>
+                <div class="slider-group">
+                    <label>Edge Threshold: <span id="val-edge-t">2.2</span></label>
+                    <input type="range" id="param-edge-t" min="1.0" max="6.0" step="0.1" value="2.2">
+                </div>
+                <div class="slider-group">
+                    <label>Smooth Sigma: <span id="val-smooth">0.9</span></label>
+                    <input type="range" id="param-smooth" min="0.0" max="3.0" step="0.1" value="0.9">
+                </div>
+                <div class="slider-group">
+                    <label>Coverage Radius: <span id="val-coverage">3</span> px</label>
+                    <input type="range" id="param-coverage" min="1" max="10" step="1" value="3">
+                </div>
+                <div class="slider-group">
+                    <label>Fusion Mode</label>
+                    <select id="param-fusion">
+                        <option value="v2">Fusion v2 (fine-where-needed)</option>
+                        <option value="or">OR Fusion (naive)</option>
+                    </select>
+                </div>
+            </section>
+
+            <!-- Feature Toggles -->
+            <section class="panel-section">
+                <h3>Features</h3>
+                <label class="toggle"><input type="checkbox" id="tog-denoise"><span class="toggle-slider"></span>Edge-Guided Denoise</label>
+                <label class="toggle"><input type="checkbox" id="tog-contrast"><span class="toggle-slider"></span>Local Contrast (CLAHE)</label>
+                <label class="toggle"><input type="checkbox" id="tog-pseudo"><span class="toggle-slider"></span>Pseudo-Color Map</label>
+                <label class="toggle"><input type="checkbox" id="tog-shapes"><span class="toggle-slider"></span>Shape Detection</label>
+                <label class="toggle"><input type="checkbox" id="tog-objects"><span class="toggle-slider"></span>Object Detection (YOLO)</label>
+                <label class="toggle"><input type="checkbox" id="tog-depth"><span class="toggle-slider"></span>Depth Estimation (MiDaS)</label>
+                <label class="toggle"><input type="checkbox" id="tog-tracking"><span class="toggle-slider"></span>Kalman Tracking</label>
+            </section>
+        </aside>
+
+        <!-- CENTER: Display -->
+        <div id="panel-center">
+            <!-- View Tabs -->
+            <div class="view-tabs">
+                <button class="view-tab active" data-view="overlay">Overlay</button>
+                <button class="view-tab" data-view="fused_edges">Fused Edges</button>
+                <button class="view-tab" data-view="enhanced">Enhanced</button>
+                <button class="view-tab" data-view="dog_response">DoG Response</button>
+                <button class="view-tab" data-view="pseudocolor">Pseudo-Color</button>
+                <button class="view-tab" data-view="depth_map">Depth Map</button>
+            </div>
+
+            <!-- Main Image -->
+            <div id="main-display">
+                <img id="main-image" alt="Processing output">
+                <div id="no-image-msg">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="1.5"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/><line x1="12" y1="22" x2="12" y2="8.5"/><line x1="22" y1="8.5" x2="12" y2="8.5"/></svg>
+                    <p>Select a source and run the pipeline</p>
+                    <p class="hint">Choose Webcam, Upload, or Demo above</p>
+                </div>
+                <!-- Webcam hidden video element -->
+                <video id="webcam-video" autoplay playsinline muted style="display:none"></video>
+                <canvas id="webcam-canvas" style="display:none"></canvas>
+            </div>
+
+            <!-- Alert Banner -->
+            <div id="alert-banner" class="hidden">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <span id="alert-text"></span>
+            </div>
+
+            <!-- Per-Scale Edge Maps -->
+            <div id="scale-strip">
+                <div class="scale-card">
+                    <span class="scale-label">Scale A (Fine)</span>
+                    <img id="img-scale-0" alt="Scale A">
+                    <span class="scale-count" id="count-scale-0">-</span>
+                </div>
+                <div class="scale-card">
+                    <span class="scale-label">Scale B (Mid)</span>
+                    <img id="img-scale-1" alt="Scale B">
+                    <span class="scale-count" id="count-scale-1">-</span>
+                </div>
+                <div class="scale-card">
+                    <span class="scale-label">Scale C (Coarse)</span>
+                    <img id="img-scale-2" alt="Scale C">
+                    <span class="scale-count" id="count-scale-2">-</span>
+                </div>
+            </div>
+
+            <!-- Simulation Metrics (demo mode only) -->
+            <div id="sim-metrics" class="hidden">
+                <h4>Optical Simulation Metrics</h4>
+                <div class="sim-row">
+                    <span>Precision: <strong id="sim-p">-</strong></span>
+                    <span>Recall: <strong id="sim-r">-</strong></span>
+                    <span>F1 Score: <strong id="sim-f1">-</strong></span>
+                </div>
+                <div id="sim-images">
+                    <div class="sim-card"><span>Input</span><img id="sim-img-input" alt="Input"></div>
+                    <div class="sim-card"><span>Detector</span><img id="sim-img-detector" alt="Detector"></div>
+                    <div class="sim-card"><span>GT Edges</span><img id="sim-img-gt" alt="GT"></div>
+                    <div class="sim-card"><span>Detected</span><img id="sim-img-edges" alt="Edges"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT PANEL: Metrics & Detections -->
+        <aside id="panel-right">
+            <!-- Metrics -->
+            <section class="panel-section">
+                <h3>Metrics</h3>
+                <div class="metric-grid">
+                    <div class="metric">
+                        <span class="metric-label">SNR</span>
+                        <span class="metric-value" id="m-snr">-</span>
+                        <span class="metric-unit">dB</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Threshold</span>
+                        <span class="metric-value" id="m-thresh">-</span>
+                        <span class="metric-unit">&sigma;</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Edge Count</span>
+                        <span class="metric-value" id="m-edges">-</span>
+                        <span class="metric-unit">px</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Latency</span>
+                        <span class="metric-value" id="m-latency">-</span>
+                        <span class="metric-unit">ms</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">FPS</span>
+                        <span class="metric-value" id="m-fps">-</span>
+                        <span class="metric-unit">Hz</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Frame</span>
+                        <span class="metric-value" id="m-size">-</span>
+                        <span class="metric-unit">px</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Detections -->
+            <section class="panel-section">
+                <h3>Detections</h3>
+                <div id="detections-list">
+                    <p class="empty-msg">No detections</p>
+                </div>
+            </section>
+
+            <!-- Tracked Objects -->
+            <section class="panel-section" id="tracked-section">
+                <h3>Tracked Objects</h3>
+                <div id="tracked-list">
+                    <p class="empty-msg">No tracked objects</p>
+                </div>
+            </section>
+
+            <!-- Capabilities -->
+            <section class="panel-section">
+                <h3>System</h3>
+                <div id="capabilities">
+                    <div class="cap-row"><span>YOLO</span><span id="cap-yolo" class="cap-badge cap-off">N/A</span></div>
+                    <div class="cap-row"><span>PyTorch</span><span id="cap-torch" class="cap-badge cap-off">N/A</span></div>
+                    <div class="cap-row"><span>CUDA</span><span id="cap-cuda" class="cap-badge cap-off">N/A</span></div>
+                </div>
+            </section>
+        </aside>
+    </main>
+
+    <!-- ============================================================ -->
+    <!-- FOOTER                                                        -->
+    <!-- ============================================================ -->
+    <footer id="footer">
+        <span>&copy; 2024-2026 Vasile Lucian Borbeleac / FRAGMERGENT TECHNOLOGY S.R.L., Cluj-Napoca, Romania</span>
+        <span>PhotonEdge v0.4.0</span>
+    </footer>
+
+    <!-- Hidden file input -->
+    <input type="file" id="file-input" accept="image/*" style="display:none">
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
